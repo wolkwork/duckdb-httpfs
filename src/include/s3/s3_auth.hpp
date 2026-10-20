@@ -4,6 +4,7 @@
 #include "s3/s3_provider.hpp"
 
 #include "duckdb/common/file_opener.hpp"
+#include "duckdb/common/map.hpp"
 #include "duckdb/main/config.hpp"
 #include "duckdb/main/secret/secret_manager.hpp"
 
@@ -72,6 +73,22 @@ struct S3AuthRequestOptions {
 	bool operator==(const S3AuthRequestOptions &other) const;
 };
 
+//! A signing endpoint that signs requests on the client's behalf, following the Iceberg REST remote signing protocol
+struct S3AuthRemoteSigner {
+	string url;
+	//! Sent with every signing request, including whatever authenticates the client to the signer
+	map<string, string> headers;
+	//! Passed through unchanged in the properties of every signing request
+	map<string, string> properties;
+
+	bool IsEnabled() const {
+		return !url.empty();
+	}
+	bool operator==(const S3AuthRemoteSigner &other) const {
+		return url == other.url && headers == other.headers && properties == other.properties;
+	}
+};
+
 struct S3AuthRefreshIdentity {
 	bool use_ssl = true;
 
@@ -86,6 +103,7 @@ struct S3AuthConfig {
 
 	//! Authentication
 	S3AuthCredentials credentials;
+	S3AuthRemoteSigner remote_signer;
 
 	//! Endpoint and URL behavior
 	string endpoint;
@@ -155,6 +173,9 @@ public:
 	const S3AuthCredentials &GetCredentials() const {
 		return credentials;
 	}
+	const S3AuthRemoteSigner &GetRemoteSigner() const {
+		return remote_signer;
+	}
 	const S3AuthURLParams &GetURLParams() const {
 		return url;
 	}
@@ -173,6 +194,7 @@ private:
 
 	S3Provider provider;
 	S3AuthCredentials credentials;
+	S3AuthRemoteSigner remote_signer;
 	S3AuthURLParams url;
 	S3AuthRequestOptions request_options;
 	S3AuthRefreshIdentity refresh_identity;
