@@ -407,21 +407,26 @@ TEST_CASE("S3 URL policy preserves the configured HTTP redirect setting", "[http
 			::AESStateSSLFactory encryption_util;
 			S3RequestSpec spec {path, S3RequestOperation::GET_OBJECT};
 			bool called = false;
-			S3RequestExecutor::RunSession(encryption_util, session, spec, [&](S3RequestData &request) {
-				REQUIRE(request.http_params->follow_location == follow_location);
-				HTTPResponse redirect(HTTPStatusCode(307));
-				redirect.headers.Insert("Location", "https://storage.example/redirected");
-				redirect.body = "redirect response";
-				auto error = ErrorData(S3RequestUtil::GetRequestError(request, redirect));
-				REQUIRE_FALSE(StringUtil::Contains(error.RawMessage(), MIGRATION_HINT));
-				REQUIRE(error.ExtraInfo().at("status_code") == "307");
-				REQUIRE(error.ExtraInfo().at("response_body") == redirect.body);
-				S3RequestContext context {request.operation, request.captured, request.display_url};
-				auto context_error = ErrorData(S3RequestUtil::GetRequestError(context, redirect));
-				REQUIRE(context_error.RawMessage() == error.RawMessage());
-				called = true;
-				return make_uniq<HTTPResponse>(HTTPStatusCode::OK_200);
-			});
+			S3RequestExecutor::RunSession(
+			    encryption_util, session, spec,
+			    [&](S3RequestData &request) {
+				    REQUIRE(request.http_params->follow_location == follow_location);
+				    HTTPResponse redirect(HTTPStatusCode(307));
+				    redirect.headers.Insert("Location", "https://storage.example/redirected");
+				    redirect.body = "redirect response";
+				    auto error = ErrorData(S3RequestUtil::GetRequestError(request, redirect));
+				    REQUIRE_FALSE(StringUtil::Contains(error.RawMessage(), MIGRATION_HINT));
+				    REQUIRE(error.ExtraInfo().at("status_code") == "307");
+				    REQUIRE(error.ExtraInfo().at("response_body") == redirect.body);
+				    S3RequestContext context {request.operation, request.captured, request.display_url};
+				    auto context_error = ErrorData(S3RequestUtil::GetRequestError(context, redirect));
+				    REQUIRE(context_error.RawMessage() == error.RawMessage());
+				    called = true;
+				    return make_uniq<HTTPResponse>(HTTPStatusCode::OK_200);
+			    },
+			    [](const S3RequestData &, const HTTPResponse &response) {
+				    return S3RequestUtil::ValidateStatus(response, {HTTPStatusCode::OK_200});
+			    });
 			REQUIRE(called);
 			REQUIRE(snapshot->Params().follow_location == follow_location);
 		}
