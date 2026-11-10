@@ -936,8 +936,9 @@ TEST_CASE("Named S3 files retain metadata through credential refresh and region 
 				::AESStateSSLFactory encryption_util;
 				S3RequestSpec spec {file.path, S3RequestOperation::GET_OBJECT, {}, "", "", ""};
 				string buffer;
-				auto result =
-				    S3RequestExecutor::RunSession(encryption_util, *session, spec, [&](S3RequestData &request_data) {
+				auto result = S3RequestExecutor::RunSession(
+				    encryption_util, *session, spec,
+				    [&](S3RequestData &request_data) {
 					    buffer.clear();
 					    auto headers = request_data.headers;
 					    headers.Insert("Range", "bytes=0-1023");
@@ -951,6 +952,9 @@ TEST_CASE("Named S3 files retain metadata through credential refresh and region 
 					        });
 					    request.try_request = true;
 					    return S3RequestExecutor::SendSessionRequest(*session, request_data, request);
+				    },
+				    [](const S3RequestData &, const HTTPResponse &response) {
+					    return S3RequestUtil::ValidateStatus(response, {HTTPStatusCode::PartialContent_206});
 				    });
 				REQUIRE(result.response->status == HTTPStatusCode::PartialContent_206);
 				REQUIRE(buffer == bytes.substr(0, 1024));
