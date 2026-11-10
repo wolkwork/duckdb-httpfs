@@ -74,7 +74,8 @@ bool S3AuthCredentials::operator==(const S3AuthCredentials &other) const {
 bool S3AuthURLParams::operator==(const S3AuthURLParams &other) const {
 	return endpoint == other.endpoint && endpoint_mode == other.endpoint_mode && style == other.style &&
 	       compatibility_mode == other.compatibility_mode && endpoint_from_url == other.endpoint_from_url &&
-	       enable_deprecated_url_parameters == other.enable_deprecated_url_parameters;
+	       enable_deprecated_url_parameters == other.enable_deprecated_url_parameters &&
+	       use_global_endpoint == other.use_global_endpoint;
 }
 
 bool S3AuthRequestOptions::operator==(const S3AuthRequestOptions &other) const {
@@ -111,15 +112,21 @@ S3AuthParams S3AuthResolver::Resolve(optional_ptr<FileOpener> opener, FileOpener
                                      const S3AuthResolveOptions &options) {
 	// Without a FileOpener we cannot access settings or secrets.
 	if (!opener) {
+		string secret_name;
+		if (info.file.extended_info && info.file.extended_info->TryGetSecretName(secret_name)) {
+			// rather than signing with whatever credentials the environment has
+			throw InvalidConfigurationException("The named secret for '%s' cannot be used without a file opener",
+			                                    info.file.path);
+		}
 		S3AuthConfig config;
-		config.route = S3UrlScheme::MatchRoutedUrl(info.file_path);
+		config.route = S3UrlScheme::MatchRoutedUrl(info.file.path);
 		options.ApplyTo(config);
-		return Resolve(std::move(config), info.file_path);
+		return Resolve(std::move(config), info.file.path);
 	}
 
 	auto secret_types = S3SecretConfig::SecretTypes();
 	S3KeyValueReader secret_reader(*opener, info, secret_types.data(), secret_types.size());
-	return Resolve(secret_reader, info.file_path, options);
+	return Resolve(secret_reader, info.file.path, options);
 }
 
 S3AuthParams S3AuthResolver::Resolve(S3KeyValueReader &secret_reader, const string &file_path,
@@ -177,6 +184,9 @@ S3AuthConfig S3AuthResolver::ReadConfig(S3KeyValueReader &secret_reader, const s
 	secret_reader.TryGetSecretKeyOrSetting("session_token", "s3_session_token", credentials.session_token);
 	ReadRemoteSigner(secret_reader, config.remote_signer);
 	secret_reader.TryGetSecretKeyOrSetting("use_ssl", "s3_use_ssl", config.use_ssl);
+	// a setting only, like enable_global_s3_configuration: it chooses an endpoint, it is not part of a credential
+	secret_reader.TryGetSecretKeyOrSetting("s3_use_global_endpoint", "s3_use_global_endpoint",
+	                                       config.use_global_endpoint);
 	secret_reader.TryGetSecretKeyOrSetting("kms_key_id", "s3_kms_key_id", request_options.kms_key_id);
 	string sse_c_key;
 	if (secret_reader.TryGetSecretKey("sse_c_key", sse_c_key)) {
@@ -280,6 +290,7 @@ S3AuthParams S3AuthResolver::Resolve(S3AuthConfig config, const string &file_pat
 	}
 	if (config.route.type == S3ProviderType::S3 &&
 	    (config.endpoint_mode == S3EndpointMode::AUTOMATIC || EndpointIsAWS(endpoint))) {
+		bool region_defaulted = false;
 		if (credentials.region.empty()) {
 			if (credentials.access_key_id.empty() && !config.remote_signer.IsEnabled()) {
 				if (config.endpoint_mode == S3EndpointMode::AUTOMATIC) {
@@ -287,10 +298,18 @@ S3AuthParams S3AuthResolver::Resolve(S3AuthConfig config, const string &file_pat
 				}
 			} else {
 				credentials.region = "us-east-1";
+				region_defaulted = true;
 			}
 		}
 		if (config.endpoint_mode == S3EndpointMode::AUTOMATIC && !credentials.region.empty()) {
-			endpoint.SetHost(StringUtil::Format("s3.%s.amazonaws.com", credentials.region));
+			// With no region configured, the global endpoint routes a virtual-hosted request to the bucket's region,
+			// and answers a wrong signature region with a 400 that carries the bucket's region and its CORS headers,
+			// where the regional endpoint's 301 carries no CORS headers and a browser cannot read it
+			if (region_defaulted && config.use_global_endpoint && style == S3URLStyle::VIRTUAL_HOSTED) {
+				endpoint.SetHost("s3.amazonaws.com");
+			} else {
+				endpoint.SetHost(StringUtil::Format("s3.%s.amazonaws.com", credentials.region));
+			}
 		}
 	}
 
@@ -299,7 +318,8 @@ S3AuthParams S3AuthResolver::Resolve(S3AuthConfig config, const string &file_pat
 	result.credentials = std::move(credentials);
 	result.remote_signer = std::move(config.remote_signer);
 	result.url = {std::move(endpoint),       config.endpoint_mode,     style,
-	              config.compatibility_mode, config.endpoint_from_url, config.enable_deprecated_url_parameters};
+	              config.compatibility_mode, config.endpoint_from_url, config.enable_deprecated_url_parameters,
+	              config.use_global_endpoint};
 	result.request_options = std::move(request_options);
 	result.refresh_identity = {config.use_ssl};
 	if (result.request_options.sse_customer_key) {
@@ -343,7 +363,8 @@ S3KeyValueReader::S3KeyValueReader(const KeyValueSecretReader &_reader) : reader
 	Value use_env_vars_for_secret_info_setting;
 	reader.TryGetSecretKeyOrSetting("enable_global_s3_configuration", "enable_global_s3_configuration",
 	                                use_env_vars_for_secret_info_setting);
-	use_env_variables_for_secret_settings = use_env_vars_for_secret_info_setting.GetValue<bool>();
+	use_env_variables_for_secret_settings =
+	    !use_env_vars_for_secret_info_setting.IsNull() && use_env_vars_for_secret_info_setting.GetValue<bool>();
 }
 
 } // namespace duckdb

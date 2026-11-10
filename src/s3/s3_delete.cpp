@@ -26,6 +26,10 @@ static void AddDeleteHash(hash_t &result, idx_t value) {
 	CombineDeleteHash(result, std::hash<idx_t> {}(value));
 }
 
+static void AddDeleteHash(hash_t &result, int64_t value) {
+	CombineDeleteHash(result, std::hash<int64_t> {}(value));
+}
+
 template <class ENUM_TYPE>
 static void AddDeleteEnumHash(hash_t &result, ENUM_TYPE value) {
 	AddDeleteHash(result, static_cast<idx_t>(value));
@@ -86,7 +90,7 @@ static void AddDeleteHTTPHash(hash_t &result, const S3RefreshableHTTPParams &htt
 void S3FileSystem::RemoveFile(const string &path, optional_ptr<FileOpener> opener) {
 	FileOpenerInfo info = {path};
 	auto auth_params = S3AuthResolver::Resolve(opener, info);
-	auto session = S3RequestExecutor::CreateSession(opener, path, auth_params);
+	auto session = S3RequestExecutor::CreateSession(opener, info.file, auth_params);
 	auto request_result = DeleteRequest(
 	    *session, S3RequestOperation::DELETE_OBJECT, path, {}, [](const S3RequestData &, const HTTPResponse &response) {
 		    return S3RequestUtil::ValidateStatus(response, {HTTPStatusCode::OK_200, HTTPStatusCode::NoContent_204});
@@ -115,7 +119,7 @@ struct S3DeleteSecretIdentity {
 	string storage_mode;
 	idx_t persist_type = 0;
 	vector<string> scope;
-	optional_idx score;
+	optional<int64_t> score;
 
 	bool operator==(const S3DeleteSecretIdentity &other) const {
 		return lookup_type == other.lookup_type && secret_type == other.secret_type && provider == other.provider &&
@@ -133,9 +137,9 @@ struct S3DeleteSecretIdentity {
 		for (const auto &entry : scope) {
 			AddDeleteHash(result, entry);
 		}
-		AddDeleteHash(result, static_cast<idx_t>(score.IsValid()));
-		if (score.IsValid()) {
-			AddDeleteHash(result, score.GetIndex());
+		AddDeleteHash(result, static_cast<idx_t>(score.has_value()));
+		if (score) {
+			AddDeleteHash(result, *score);
 		}
 	}
 };
@@ -190,7 +194,7 @@ struct S3DeleteBatchEntry {
 };
 
 static S3DeleteSecretIdentity GetDeleteSecretIdentity(const string &lookup_type, const SecretEntry &secret_entry,
-                                                      idx_t score) {
+                                                      int64_t score) {
 	auto &secret = *secret_entry.secret;
 	return {lookup_type,
 	        static_cast<const string &>(secret.GetType()),
@@ -216,7 +220,7 @@ static vector<S3DeleteSecretIdentity> GetSelectedSecretIdentities(optional_ptr<F
 			result.push_back({type, {}});
 			continue;
 		}
-		result.push_back(GetDeleteSecretIdentity(type, *match.secret_entry, NumericCast<idx_t>(match.score)));
+		result.push_back(GetDeleteSecretIdentity(type, *match.secret_entry, match.score));
 	}
 	return result;
 }
@@ -345,7 +349,7 @@ void S3FileSystem::RemoveFiles(const vector<string> &paths, optional_ptr<FileOpe
 
 		S3DeleteBatchUrlInfo url_info = {parsed_url.GetPrefix(), parsed_url.GetBucketHTTPUrl(), auth_params};
 		auto refreshable_http_params = S3RequestExecutor::ReadRefreshableHTTPParams(
-		    HTTPFSUtil::GetHTTPUtil(opener).Cast<HTTPFSUtil>(), opener, path);
+		    HTTPFSUtil::GetHTTPUtil(opener).Cast<HTTPFSUtil>(), opener, info.file);
 		auto identity =
 		    CreateDeleteBatchIdentity(std::move(url_info), std::move(refreshable_http_params), opener, path);
 		auto entry = delete_batches.find(identity);
